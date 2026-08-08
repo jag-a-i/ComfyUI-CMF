@@ -6,6 +6,15 @@ CMF leverages memory-mapped weights (`mmap`), 4-bit quantizations, and Vulkan/GP
 
 ---
 
+## Credits & Acknowledgments
+
+This custom node package is an independent extension built for **CMF (Cortiq Model Format)**:
+- **Original CMF Repository**: [https://github.com/infosave2007/cmf](https://github.com/infosave2007/cmf)
+- **Engine Author**: [@infosave2007](https://github.com/infosave2007)
+- **License**: Apache License 2.0
+
+---
+
 ## Key Features
 
 - **Direct C-FFI Binding**: Uses Python `ctypes` against `cortiq-ffi` for zero IPC/HTTP server overhead.
