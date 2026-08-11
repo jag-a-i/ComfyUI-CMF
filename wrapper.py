@@ -197,6 +197,7 @@ class CMFWrapper:
         enable_gpu: bool = True,
         num_threads: int = 0,
         interrupt_check_fn=None,
+        progress_callback=None,
     ) -> torch.Tensor:
         """
         Generate an image using cortiq_imagine Rust FFI binding.
@@ -215,9 +216,15 @@ class CMFWrapper:
         out_ptr = rgb_np.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
 
         def py_progress_cb(step, total_steps, user_data):
+            if progress_callback:
+                try:
+                    progress_callback(step, total_steps)
+                except Exception:
+                    pass
             if interrupt_check_fn and interrupt_check_fn():
                 return False
             return True
+
 
         c_progress_cb = self.PROGRESS_CALLBACK_TYPE(py_progress_cb)
 

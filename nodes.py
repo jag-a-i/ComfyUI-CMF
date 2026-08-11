@@ -2,7 +2,9 @@ import os
 import sys
 import folder_paths
 import comfy.model_management
+import comfy.utils
 from .wrapper import CMFWrapper, CMFModelHandle
+
 
 # Global wrapper singleton
 _wrapper_instance = None
@@ -240,6 +242,11 @@ class CMFImageGenerate:
 
         wrapper = get_cmf_wrapper()
 
+        pbar = comfy.utils.ProgressBar(steps)
+
+        def progress_cb(step, total_steps):
+            pbar.update_absolute(step, total_steps)
+
         def interrupt_check():
             return comfy.model_management.processing_interrupted()
 
@@ -254,7 +261,9 @@ class CMFImageGenerate:
             enable_gpu,
             threads,
             interrupt_check_fn=interrupt_check,
+            progress_callback=progress_cb,
         )
+
         return (image_tensor,)
 
 
