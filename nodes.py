@@ -242,7 +242,10 @@ class CMFImageGenerate:
 
         wrapper = get_cmf_wrapper()
 
+        print(f"[ComfyUI-CMF] Loading '{model_name}' & initializing GPU compute graph (size: {width}x{height}, steps: {steps})...")
+
         pbar = comfy.utils.ProgressBar(steps)
+
 
         def progress_cb(step, total_steps):
             pbar.update_absolute(step, total_steps)
