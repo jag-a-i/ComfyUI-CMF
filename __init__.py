@@ -1,4 +1,14 @@
 import os
+import sys
+from pathlib import Path
+
+# Automatically build dynamic library if missing on node load
+try:
+    from .install import build_cortiq_ffi
+    build_cortiq_ffi()
+except Exception as e:
+    print(f"[ComfyUI-CMF] Automatic GPU build check skipped: {e}")
+
 import folder_paths
 from .nodes import (
     CMFModelLoader,
@@ -7,6 +17,7 @@ from .nodes import (
     CMFChatGenerate,
     CMFImageGenerate,
 )
+
 
 # Register custom model folder path for ComfyUI
 cmf_model_path = os.path.join(folder_paths.models_dir, "cmf")

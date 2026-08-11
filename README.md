@@ -44,18 +44,23 @@ ComfyUI/custom_nodes/ComfyUI-CMF/
 
 ## Setup & Installation
 
-### 1. Place Compiled FFI Library
-Build or copy the compiled `cortiq-ffi` dynamic library into `custom_nodes/ComfyUI-CMF/bin/`:
+### 1. Automatic 1-Step Installation (Recommended)
+Simply clone this repository into your ComfyUI `custom_nodes/` directory:
 
-* **Windows**: `bin/cortiq_ffi.dll`
-* **Linux**: `bin/libcortiq_ffi.so`
-* **macOS**: `bin/libcortiq_ffi.dylib`
-
-To build from the `cmf` repository source:
 ```bash
-cargo build -p cortiq-ffi --release
-# Copy target/release/cortiq_ffi.dll (or libcortiq_ffi.so) to custom_nodes/ComfyUI-CMF/bin/
+cd ComfyUI/custom_nodes/
+git clone https://github.com/jag-a-i/ComfyUI-CMF.git
 ```
+
+When ComfyUI starts up, `ComfyUI-CMF` will **automatically detect** if the native GPU dynamic library is built and compile it if missing!
+
+### 2. Manual / One-Click Build Script
+You can also run the build script manually at any time:
+- **Windows**: Double-click `install.bat` or run `python install.py`
+- **Linux / macOS**: Run `./install.sh` or `python3 install.py`
+
+*(Requires [Rust/Cargo](https://rustup.rs/) installed on system PATH for native GPU compilation).*
+
 
 ### 2. Place CMF Model Files
 Place your `.cmf` model files in the designated ComfyUI directory:
