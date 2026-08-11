@@ -179,3 +179,108 @@ class CMFChatGenerate:
 
         result = model.generate_messages(messages, max_tokens, interrupt_check_fn=interrupt_check)
         return (result,)
+
+
+class CMFImageGenerate:
+    """
+    ComfyUI Node for CMF text-to-image generation.
+    Generates image tensors based on CMF models and prompts.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        cmf_models = folder_paths.get_filename_list("cmf")
+        if not cmf_models:
+            cmf_dir = os.path.join(folder_paths.models_dir, "cmf")
+            if os.path.exists(cmf_dir):
+                cmf_models = [f for f in os.listdir(cmf_dir) if f.endswith(".cmf")]
+            if not cmf_models:
+                cmf_models = ["none_found"]
+
+        return {
+            "required": {
+                "model_name": (cmf_models,),
+                "prompt": ("STRING", {"multiline": True, "default": "a beautiful photo of a cozy cabin in the snow"}),
+                "width": ("INT", {"default": 1024, "min": 64, "max": 2048, "step": 64}),
+                "height": ("INT", {"default": 1024, "min": 64, "max": 2048, "step": 64}),
+                "steps": ("INT", {"default": 20, "min": 1, "max": 100, "step": 1}),
+                "guidance": ("FLOAT", {"default": 3.5, "min": 0.0, "max": 20.0, "step": 0.1}),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+                "enable_gpu": ("BOOLEAN", {"default": True}),
+                "threads": ("INT", {"default": 0, "min": 0, "max": 64, "step": 1}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    FUNCTION = "generate_image"
+    CATEGORY = "Cortiq/CMF"
+
+    def generate_image(
+        self,
+        model_name: str,
+        prompt: str,
+        width: int,
+        height: int,
+        steps: int,
+        guidance: float,
+        seed: int,
+        enable_gpu: bool = True,
+        threads: int = 0,
+    ):
+        if model_name == "none_found":
+            raise RuntimeError(
+                "[ComfyUI-CMF] No .cmf files found in 'ComfyUI/models/cmf/'. "
+                "Please place your CMF quantized model files in that directory."
+            )
+
+        full_path = folder_paths.get_full_path("cmf", model_name)
+        if not full_path:
+            full_path = os.path.join(folder_paths.models_dir, "cmf", model_name)
+
+        wrapper = get_cmf_wrapper()
+
+        def interrupt_check():
+            return comfy.model_management.processing_interrupted()
+
+        image_tensor = wrapper.generate_image(
+            full_path,
+            prompt,
+            width,
+            height,
+            steps,
+            guidance,
+            seed,
+            enable_gpu,
+            threads,
+            interrupt_check_fn=interrupt_check,
+        )
+        return (image_tensor,)
+
+
+NODE_CLASS_MAPPINGS = {
+    "CMFModelLoader": CMFModelLoader,
+    "CMFSamplerOptions": CMFSamplerOptions,
+    "CMFTextGenerate": CMFTextGenerate,
+    "CMFChatGenerate": CMFChatGenerate,
+    "CMFImageGenerate": CMFImageGenerate,
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "CMFModelLoader": "Load CMF Model",
+    "CMFSamplerOptions": "CMF Sampler Options",
+    "CMFTextGenerate": "CMF Text Generation",
+    "CMFChatGenerate": "CMF Chat Generation",
+    "CMFImageGenerate": "CMF Image Generation",
+}
+
+__all__ = [
+    "CMFModelLoader",
+    "CMFSamplerOptions",
+    "CMFTextGenerate",
+    "CMFChatGenerate",
+    "CMFImageGenerate",
+    "NODE_CLASS_MAPPINGS",
+    "NODE_DISPLAY_NAME_MAPPINGS",
+]
+

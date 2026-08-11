@@ -5,6 +5,7 @@ from .nodes import (
     CMFSamplerOptions,
     CMFTextGenerate,
     CMFChatGenerate,
+    CMFImageGenerate,
 )
 
 # Register custom model folder path for ComfyUI
@@ -22,6 +23,7 @@ NODE_CLASS_MAPPINGS = {
     "CMFSamplerOptions": CMFSamplerOptions,
     "CMFTextGenerate": CMFTextGenerate,
     "CMFChatGenerate": CMFChatGenerate,
+    "CMFImageGenerate": CMFImageGenerate,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -29,6 +31,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "CMFSamplerOptions": "CMF Sampler Options",
     "CMFTextGenerate": "CMF Text Generation",
     "CMFChatGenerate": "CMF Chat Generation",
+    "CMFImageGenerate": "CMF Image Generation",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
