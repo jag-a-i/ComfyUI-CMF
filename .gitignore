@@ -26,7 +26,9 @@ bin/*.dll
 bin/*.so
 bin/*.dylib
 
-# Internal handoffs & temporary logs
+# Internal handoffs, AI transcripts, and temporary logs
+docs/conversations/
+conversations/
 docs/NEXT_AGENT_HANDOFF.md
 NEXT_AGENT_HANDOFF.md
 *.tmp
