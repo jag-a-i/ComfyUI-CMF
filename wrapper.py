@@ -1,6 +1,7 @@
 import ctypes
 import os
 import sys
+import time
 import json
 from pathlib import Path
 import numpy as np
@@ -214,8 +215,21 @@ class CMFWrapper:
 
         rgb_np = np.zeros((height, width, 3), dtype=np.uint8)
         out_ptr = rgb_np.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
+        t_gen_start = time.time()
+        last_step_time = [time.time()]
 
         def py_progress_cb(step, total_steps, user_data):
+            now = time.time()
+            step_dt = now - last_step_time[0]
+            last_step_time[0] = now
+            el = now - t_gen_start
+            pct = (step / total_steps) * 100.0 if total_steps > 0 else 0
+            eta = (el / step) * (total_steps - step) if step > 0 else 0
+            print(
+                f"[ComfyUI-CMF] Step {step:2d}/{total_steps} ({pct:5.1f}%) | "
+                f"Step: {step_dt:5.2f}s | Elapsed: {el:5.1f}s | ETA: {eta:5.1f}s",
+                flush=True
+            )
             if progress_callback:
                 try:
                     progress_callback(step, total_steps)
@@ -224,7 +238,6 @@ class CMFWrapper:
             if interrupt_check_fn and interrupt_check_fn():
                 return False
             return True
-
 
         c_progress_cb = self.PROGRESS_CALLBACK_TYPE(py_progress_cb)
 

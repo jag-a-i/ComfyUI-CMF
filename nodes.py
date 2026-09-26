@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import folder_paths
 import comfy.model_management
 import comfy.utils
@@ -241,11 +242,12 @@ class CMFImageGenerate:
             full_path = os.path.join(folder_paths.models_dir, "cmf", model_name)
 
         wrapper = get_cmf_wrapper()
+        t_start = time.time()
 
-        print(f"[ComfyUI-CMF] Loading '{model_name}' & initializing GPU compute graph (size: {width}x{height}, steps: {steps})...")
+        print(f"\n[ComfyUI-CMF] Starting Image Generation: '{model_name}'", flush=True)
+        print(f"[ComfyUI-CMF] Resolution: {width}x{height} | Steps: {steps} | Guidance: {guidance} | GPU: {enable_gpu}", flush=True)
 
         pbar = comfy.utils.ProgressBar(steps)
-
 
         def progress_cb(step, total_steps):
             pbar.update_absolute(step, total_steps)
@@ -266,6 +268,9 @@ class CMFImageGenerate:
             interrupt_check_fn=interrupt_check,
             progress_callback=progress_cb,
         )
+
+        total_time = time.time() - t_start
+        print(f"[ComfyUI-CMF] Image generation completed in {total_time:.2f}s ({width}x{height}, {steps} steps)\n", flush=True)
 
         return (image_tensor,)
 
