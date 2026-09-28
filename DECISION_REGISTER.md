@@ -349,4 +349,36 @@ This document serves as the durable Architecture Decision Record (ADR) and decis
   - 1024×1024 generations achieve excellent visual fidelity at 14 steps with zero visual artifacts.
 - **References:** `custom_nodes/Comfy-CMF/benchmark_speedup_samurai.py`, `samurai_lady_1024_14steps.png`
 
+---
+
+### DR-026 - Unified Engine Scratch Buffer Pool Architecture
+
+- **Date:** 2026-09-28
+- **Status:** Accepted
+- **Decision:** Unify the engine's scratch buffer allocation pool across DiT and VAE pipelines. Specifically, share large intermediate activation buffers (`pool-scratch-a`, `pool-scratch-b`, `pool-scratch-c`) between DiT MLP projections and VAE ResNet/Attention blocks (`buf_a`, `buf_b`, `buf_c`), and reuse sequentially disjoint intermediate buffers (`gbuf`, `ubuf`, `abuf`) for attention Q/K/V passes in `dit_block_seg`. Eliminate buffer destruction on run boundaries (`clear_dit_pool` / `clear_vae_pool`), retaining warm allocations across consecutive runs with GPU queue drain (`c.device.poll(wgpu::PollType::wait_indefinitely())`).
+- **Rationale:**
+  1. **Peak VRAM Bounding Under External Contention:** Independent scratch allocations for DiT (2.57 GB) and VAE (1.61 GB) resulted in a combined 4.18 GB scratch footprint. Under real-world workstation conditions where user background applications (e.g. Adobe Premiere Pro, Topaz Video AI, web browsers) occupy ~3.0 GB of VRAM on a 10 GB RTX 3080, total committed VRAM exceeded 9.5 GB, causing WDDM PCIe paging, allocator failures, and silent fallback to host CPU (530s stalls).
+  2. **Strict Sequential Disjointness:** DiT transformer forward passes and VAE decoding passes are strictly sequential. They never execute concurrently. Sharing the underlying GPU buffers bounds the entire engine scratch pool to **1.81 GB** total.
+  3. **Zero Allocator Fragmentation:** Reallocating multi-gigabyte GPU buffers on every run fragments the WDDM driver heap. Retaining allocated scratch buffers prevents memory churn and eliminates run-to-run allocation latency.
+- **Consequences:**
+  - Peak engine VRAM footprint is reduced from 6.38 GB to **4.01 GB** (weights + scratch), guaranteeing stable GPU-resident execution within 7.1 GB total even when external applications hold 3.0 GB VRAM.
+  - Eradicates silent CPU fallbacks across consecutive generation runs.
+- **References:** `crates/cortiq-engine/src/gpu_wgpu.rs` (`dit_block_seg`, `VaeBufferPool::get_or_create`, `clear_dit_pool`, `clear_vae_pool`)
+
+---
+
+### DR-027 - Chunked Command Buffer Submissions for WDDM Watchdog TDR Immunity
+
+- **Date:** 2026-09-28
+- **Status:** Accepted
+- **Decision:** Break monolithic GPU dispatches exceeding 10,000 workgroups into individual per-chunk command buffer submissions (`submit_now(c, enc.finish())`) rather than encoding all chunks into a single monolithic command buffer. Applied specifically to `vae_attn_gpu` (16 query chunks, 84,000 workgroups) and large VAE convolutions.
+- **Rationale:**
+  1. **WDDM 2.0-Second TDR Timeout:** Windows Display Driver Model (WDDM) enforces a hardware watchdog (Timeout Detection and Recovery) that resets the GPU if a single submitted command buffer executes for more than 2.0 seconds. Under concurrent desktop GPU load (e.g., video editing apps or hardware-accelerated video rendering), a monolithic 84,000-workgroup dispatch can cross the 2-second threshold, triggering `VK_ERROR_DEVICE_LOST` / `Parent device is lost`.
+  2. **Interleaved Desktop Scheduling:** Submitting per-chunk command buffers allows the OS scheduler and display compositor to interleave lightweight frames between chunks, keeping the GPU watchdog timer refreshed while maintaining maximum compute throughput.
+- **Consequences:**
+  - Completely resolves `VK_ERROR_DEVICE_LOST` and driver crashes during 1024×1024 VAE decode under background GPU load.
+  - VAE middle attention executes safely in ~5.2s–7.2s with zero driver recovery events.
+- **References:** `crates/cortiq-engine/src/gpu_wgpu.rs` (`vae_attn_gpu`, `submit_now`)
+
+
 
