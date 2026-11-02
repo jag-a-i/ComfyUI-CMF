@@ -49,7 +49,6 @@ class CMFWrapper:
         if build_target.exists():
             return str(build_target)
             
-        base_dir = Path(__file__).parent / "bin"
         target = base_dir / lib_name
         if target.exists():
             return str(target)
@@ -58,7 +57,6 @@ class CMFWrapper:
         if alt_target.exists():
             return str(alt_target)
 
-            
         return str(target)
 
     def _bind_signatures(self):
@@ -71,6 +69,16 @@ class CMFWrapper:
         if hasattr(self.lib, "cortiq_set_gpu"):
             self.lib.cortiq_set_gpu.restype = None
             self.lib.cortiq_set_gpu.argtypes = [ctypes.c_bool]
+
+        # bool cortiq_gpu_available(void);
+        if hasattr(self.lib, "cortiq_gpu_available"):
+            self.lib.cortiq_gpu_available.restype = ctypes.c_bool
+            self.lib.cortiq_gpu_available.argtypes = []
+
+        # bool cortiq_coop_matrix_active(void);
+        if hasattr(self.lib, "cortiq_coop_matrix_active"):
+            self.lib.cortiq_coop_matrix_active.restype = ctypes.c_bool
+            self.lib.cortiq_coop_matrix_active.argtypes = []
             
         # void cortiq_set_threads(int32_t n);
         if hasattr(self.lib, "cortiq_set_threads"):
@@ -90,6 +98,14 @@ class CMFWrapper:
             ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32, 
             self.CALLBACK_TYPE, ctypes.c_void_p
         ]
+
+        # int32_t cortiq_complete(void *handle, const char *prompt, uint32_t max_tokens, cortiq_token_cb cb, void *user);
+        if hasattr(self.lib, "cortiq_complete"):
+            self.lib.cortiq_complete.restype = ctypes.c_int32
+            self.lib.cortiq_complete.argtypes = [
+                ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32,
+                self.CALLBACK_TYPE, ctypes.c_void_p
+            ]
 
         # int32_t cortiq_chat_messages(void *handle, const char *json_messages, uint32_t max_tokens, cortiq_token_cb cb, void *user);
         if hasattr(self.lib, "cortiq_chat_messages"):
@@ -125,6 +141,24 @@ class CMFWrapper:
                 ctypes.c_void_p,
             ]
 
+        # int32_t cortiq_vae_decode(
+        #     const char *model_path, const float *latents,
+        #     uint32_t h_in, uint32_t w_in, float *out_rgb
+        # );
+        if hasattr(self.lib, "cortiq_vae_decode"):
+            self.lib.cortiq_vae_decode.restype = ctypes.c_int32
+            self.lib.cortiq_vae_decode.argtypes = [
+                ctypes.c_char_p,
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.c_uint32,
+                ctypes.c_uint32,
+                ctypes.POINTER(ctypes.c_float),
+            ]
+
+        # const char *cortiq_version(void);
+        if hasattr(self.lib, "cortiq_version"):
+            self.lib.cortiq_version.restype = ctypes.c_char_p
+            self.lib.cortiq_version.argtypes = []
         
         # void cortiq_cancel(void *handle);
         if hasattr(self.lib, "cortiq_cancel"):
@@ -149,6 +183,18 @@ class CMFWrapper:
         """Enable or disable discrete GPU graph acceleration (Vulkan / Metal). Must be called before load."""
         if hasattr(self.lib, "cortiq_set_gpu"):
             self.lib.cortiq_set_gpu(enable)
+
+    def is_gpu_available(self) -> bool:
+        """Return True if the library build has a working GPU backend and adapter."""
+        if hasattr(self.lib, "cortiq_gpu_available"):
+            return bool(self.lib.cortiq_gpu_available())
+        return False
+
+    def is_coop_matrix_active(self) -> bool:
+        """Return True when Vulkan Cooperative Matrix (Tensor Core) pipeline is active."""
+        if hasattr(self.lib, "cortiq_coop_matrix_active"):
+            return bool(self.lib.cortiq_coop_matrix_active())
+        return False
 
     def set_threads(self, num_threads: int = 0):
         """Set execution thread pool count (0 = automatic based on physical CPU cores)."""
@@ -217,6 +263,7 @@ class CMFWrapper:
         out_ptr = rgb_np.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
         t_gen_start = time.time()
         last_step_time = [time.time()]
+        was_interrupted = [False]
 
         def py_progress_cb(step, total_steps, user_data):
             now = time.time()
@@ -236,6 +283,7 @@ class CMFWrapper:
                 except Exception:
                     pass
             if interrupt_check_fn and interrupt_check_fn():
+                was_interrupted[0] = True
                 return False
             return True
 
@@ -255,12 +303,13 @@ class CMFWrapper:
         )
 
         if res < 0:
+            if was_interrupted[0]:
+                return torch.from_numpy(rgb_np).to(torch.float32).unsqueeze(0) / 255.0
             err = self.get_last_error()
             raise RuntimeError(f"[ComfyUI-CMF] Image generation failed: {err}")
 
         image_tensor = torch.from_numpy(rgb_np).to(torch.float32) / 255.0
         return image_tensor.unsqueeze(0)
-
 
 
 class CMFModelHandle:

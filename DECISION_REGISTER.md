@@ -380,5 +380,31 @@ This document serves as the durable Architecture Decision Record (ADR) and decis
   - VAE middle attention executes safely in ~5.2s–7.2s with zero driver recovery events.
 - **References:** `crates/cortiq-engine/src/gpu_wgpu.rs` (`vae_attn_gpu`, `submit_now`)
 
+---
 
+### DR-028 - In-Tree WGPU Cooperative Matrix Activation with Subgroup-32 Safety Guard
 
+- **Date:** 2026-09-29
+- **Status:** Accepted
+- **Decision:** Activate the in-tree WGSL cooperative matrix pipeline (`COOP_MM_SRC` / `q4tp_mm_coop`) in `gpu_wgpu.rs` for all DiT block GEMMs, gated by an explicit `min_subgroup_size == 32` hardware guard. Deprecate the standalone Vulkan cooperative matrix route (`vulkan.rs` / `q4tp_coop.spv`) and the cross-API CUDA GEMM hybridization route (`gpu.rs:1561`).
+- **Rationale:**
+  1. **Vulkan Disconnect Discovery:** The original roadmap targeted `vulkan.rs` / `q4tp_coop.spv` for cooperative matrix acceleration. A multi-agent architectural audit (CEO + Engineering review) determined that `dit_block_seg` — the DiT generation kernel — runs entirely within `gpu_wgpu.rs` using `wgpu::Buffer` resident memory. `vulkan.rs::q4tp_matmat` is only called for standalone LLM text inference (via `gpu.rs::q4tp_matmat`), never by the image generation pipeline. Activating `vulkan.rs` for DiT would require 784 PCIe host roundtrips per generation step, negating any speedup.
+  2. **In-Tree Pipeline Already Wired:** `gpu_wgpu.rs` contained a complete WGSL cooperative matrix kernel (`COOP_MM_SRC`, lines 18755–18900) compiled into a `q4tp_mm_coop: Option<ComputePipeline>` that is already selected by `mm_pipeline(c, true, false)` for all 7 DiT block GEMMs (Q, K, V, Out, W1, W3, W2). The pipeline was disabled only because `want_coop` evaluated false — the cooperative matrix feature was correctly gated but the pipeline itself was ready.
+  3. **Subgroup-32 Bug Fix:** The original `want_coop` condition lacked a subgroup size check. `COOP_MM_SRC` compiles for `@workgroup_size(128)` = 4 subgroups × 32 threads. On Wave64 hardware (AMD GCN/Vega, some Intel Xe), a 128-thread workgroup maps to 2 subgroups of 64 — the 16×16 accumulation tile addressing becomes silently incorrect, producing garbage images without any runtime error. Added: `let sg_size = adapter.get_info().subgroup_min_size; && sg_size == 32` to `want_coop`. On RTX 3080: `sg_min=32` → guard passes. On WARP/AMD GCN: guard blocks cooperative path, falls back to scalar WGSL.
+  4. **CUDA Hybridization Rejected:** `gpu::q4tp_matmat` (the standalone GEMM router) is never called by `dit_block_seg`. Enabling the CUDA lane in `gpu.rs:1561` would route LLM text inference through CUDA, not DiT. Additionally, `wgpu::Buffer` and `CUdeviceptr` cannot interoperate without `VK_KHR_external_memory_win32` host staging — 784 stalls per step + duplicate 2.2 GB weight VRAM = DR-026 violation + OOM on 10 GB VRAM.
+  5. **Naga Layout Correctness (Pre-existing):** The `COOP_MM_SRC` WGSL uses `coopLoadT` for the activation matrix A (emits RowMajor in SPIR-V despite the name) and `coopLoad` for the weight matrix B (emits ColumnMajor). This is the documented Naga inversion (comment at `gpu_wgpu.rs:18745`). The layout was correct for Ampere prior to this change; no modifications were made to `COOP_MM_SRC`.
+- **Hardware Verification:** RTX 3080 (Vulkan adapter, sg_min=32):
+  - `want_coop = true` (feature=✅, f16=✅, M16N16K16 f32-accumulator shape=✅, sg32=✅)
+  - `[CMF-GPU] wgpu cooperative matrix pipeline: ready=true`
+  - Cooperative matrix: `M16N16K16 ab:F16 c:F32` — exact match for `COOP_MM_SRC`
+- **Parity Test Results** (`tests/gpu_coop_parity.rs`):
+  - `coop_gemm_dit_shapes`: 9 (tensor, batch) pairs at Lumina DiT shapes [2304×2304, 9216×2304, 2304×9216], b∈{1,64,512} — all PASSED. Best: MSE=5.07e-9, PSNR=82.9 dB. Threshold: MSE < 1e-5.
+  - `coop_gemm_tile_boundaries`: Token counts N∈{1,15,31,63,65,127,129,1024} — all PASSED. No NaN/Inf. MSE ≈ 2e-8 throughout.
+  - `coop_vs_scalar_ab`: Largest Q4TP tensor, b=128 — PASSED. MSE=1.395e-7, PSNR=68.6 dB. Threshold: MSE < 1e-5, PSNR > 55 dB.
+- **Consequences:**
+  - `q4tp_mm_coop` pipeline now routes all 7 DiT block GEMMs through Vulkan cooperative matrix instructions on NVIDIA Ampere/Ada hardware with `sg_min=32`.
+  - Non-NVIDIA hardware (AMD Wave64, Intel Arc non-32-subgroup, WARP) safely falls back to scalar `q4tp_mm` — zero API changes required.
+  - DiT GEMM throughput target: 50,730 GFLOP/s cooperative vs 25,082 GFLOP/s scalar (2.02× per GEMM). Combined with 8-step flow matching (validated in DR-025), DiT denoise time target: ~12–16s at 1024×1024.
+- **References:**
+  - `crates/cortiq-engine/src/gpu_wgpu.rs` (lines 10652–10670 `want_coop`, 10823–10849 pipeline creation, 18755–18912 `COOP_MM_SRC`, 19393–19409 `mm_pipeline`)
+  - `crates/cortiq-engine/tests/gpu_coop_parity.rs` (new parity test suite)

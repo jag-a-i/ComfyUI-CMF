@@ -10,6 +10,15 @@ from .wrapper import CMFWrapper, CMFModelHandle
 # Global wrapper singleton
 _wrapper_instance = None
 
+DEFAULT_SAMPLER_OPTIONS = {
+    "temperature": 0.7,
+    "top_p": 0.9,
+    "top_k": 40,
+    "repetition_penalty": 1.1,
+    "greedy": False,
+    "seed": 0,
+}
+
 def get_cmf_wrapper():
     """Lazy initialize global CMFWrapper singleton."""
     global _wrapper_instance
@@ -130,13 +139,13 @@ class CMFTextGenerate:
         if not isinstance(model, CMFModelHandle):
             raise TypeError(f"[ComfyUI-CMF] Invalid model type received: {type(model)}")
             
-        if options:
-            model.set_options(options)
+        model.set_options(options if options is not None else DEFAULT_SAMPLER_OPTIONS)
 
         def interrupt_check():
             return comfy.model_management.processing_interrupted()
 
         result = model.generate(prompt, max_tokens, interrupt_check_fn=interrupt_check)
+        comfy.model_management.throw_exception_if_processing_interrupted()
         return (result,)
 
 
@@ -169,8 +178,7 @@ class CMFChatGenerate:
         if not isinstance(model, CMFModelHandle):
             raise TypeError(f"[ComfyUI-CMF] Invalid model type received: {type(model)}")
             
-        if options:
-            model.set_options(options)
+        model.set_options(options if options is not None else DEFAULT_SAMPLER_OPTIONS)
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -181,6 +189,7 @@ class CMFChatGenerate:
             return comfy.model_management.processing_interrupted()
 
         result = model.generate_messages(messages, max_tokens, interrupt_check_fn=interrupt_check)
+        comfy.model_management.throw_exception_if_processing_interrupted()
         return (result,)
 
 
@@ -268,6 +277,7 @@ class CMFImageGenerate:
             interrupt_check_fn=interrupt_check,
             progress_callback=progress_cb,
         )
+        comfy.model_management.throw_exception_if_processing_interrupted()
 
         total_time = time.time() - t_start
         print(f"[ComfyUI-CMF] Image generation completed in {total_time:.2f}s ({width}x{height}, {steps} steps)\n", flush=True)
@@ -300,4 +310,3 @@ __all__ = [
     "NODE_CLASS_MAPPINGS",
     "NODE_DISPLAY_NAME_MAPPINGS",
 ]
-

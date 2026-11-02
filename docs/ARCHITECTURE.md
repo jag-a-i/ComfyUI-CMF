@@ -1,14 +1,14 @@
 # Architecture Specifications: ComfyUI-CMF
 
 - **Component:** `ComfyUI-CMF` (Cortiq Model Format Custom Nodes for ComfyUI)
-- **Version:** 1.0.0
+- **Version:** 1.1.0
 - **Target Environment:** Python 3.10+ / PyTorch / ComfyUI / Rust C-FFI (`cortiq-ffi`)
 
 ---
 
 ## 1. System Context & Overview
 
-`ComfyUI-CMF` integrates the **Cortiq Model Format (CMF)** Rust inference engine into ComfyUI. CMF provides high-performance, low-memory-footprint execution of 4-bit quantized Language Models and Vision-Language Models using native memory mapping (`mmap`) and Vulkan/GPU acceleration.
+`ComfyUI-CMF` integrates the **Cortiq Model Format (CMF)** Rust inference engine into ComfyUI. CMF provides high-performance, low-memory-footprint execution of 4-bit quantized Language Models, Vision-Language Models, and Diffusion Transformers (`Lumina-Image 2.0`) using native memory mapping (`mmap`) and Vulkan/wgpu GPU acceleration.
 
 ```
 +-----------------------------------------------------------------------+
@@ -16,33 +16,35 @@
 +-----------------------------------------------------------------------+
                                    |
         +--------------------------+--------------------------+
-        |                                                     |
-        v                                                     v
-+-------------------------------+             +-------------------------------+
-|        CMFModelLoader         |             |       CMFSamplerOptions       |
-+---------------+---------------+             +---------------+---------------+
-                |                                             |
-                | (CMFModelHandle)                            | (JSON String)
-                +--------------------------+------------------+
-                                           |
-                                           v
-                            +-------------------------------+
-                            |   CMFTextGenerate / CMFChat   |
-                            +---------------+---------------+
-                                           |
-                                           v
+        |                          |                          |
+        v                          v                          v
++---------------+          +---------------+          +------------------+
+|CMFModelLoader |          |CMFSamplerOpts |          | CMFImageGenerate |
++-------+-------+          +-------+-------+          +--------+---------+
+        |                          |                           |
+        | (CMFModelHandle)         | (Options Dict)            | (IMAGE Tensor)
+        +-------------+------------+                           |
+                      |                                        |
+                      v                                        |
+        +---------------------------+                          |
+        | CMFTextGenerate / CMFChat |                          |
+        +-------------+-------------+                          |
+                      |                                        |
+                      +-------------------+--------------------+
+                                          |
+                                          v
                             +-------------------------------+
                             |     CMFWrapper (ctypes)       |
                             +---------------+---------------+
-                                           |
-                                           | (C ABI Exports)
-                                           v
+                                            |
+                                            | (C ABI Exports)
+                                            v
                             +-------------------------------+
                             |   cortiq-ffi dynamic library  |
                             |    (.dll / .so / .dylib)      |
                             +---------------+---------------+
-                                           |
-                                           v
+                                            |
+                                            v
                             +-------------------------------+
                             |    cortiq-engine (Rust core)  |
                             +-------------------------------+
@@ -57,23 +59,43 @@ The FFI interface binds to `crates/cortiq-ffi/include/cortiq.h`.
 ### C Function Signatures Bound via `ctypes`
 
 ```c
+/* Engine version, static UTF-8. */
+const char *cortiq_version(void);
+
 /* Open a .cmf file (memory-mapped). Returns opaque handle pointer; NULL on error. */
 void *cortiq_load(const char *path);
 
 /* Globally enable or disable discrete GPU graph. Must be called before cortiq_load. */
 void cortiq_set_gpu(bool enable);
 
+/* True when this build has a working GPU backend and adapter. */
+bool cortiq_gpu_available(void);
+
+/* True when Tensor Core cooperative matrices are active on the GPU. */
+bool cortiq_coop_matrix_active(void);
+
 /* Set thread count for multi-threaded inference pool. 0 = auto. */
 void cortiq_set_threads(int32_t n);
 
-/* Set runtime JSON options (temperature, top_p, greedy, seed, repetition_penalty). Returns 0 on success, -1 on error. */
+/* Set runtime JSON options (temperature, top_p, top_k, repetition_penalty, greedy, seed). Returns 0 on success, -1 on error. */
 int32_t cortiq_set_options(void *handle, const char *json_options);
 
 /* Single turn streaming chat generation. Returns total tokens generated or -1 on error. */
 int32_t cortiq_chat(void *handle, const char *prompt, uint32_t max_tokens, cortiq_token_cb cb, void *user);
 
+/* Raw completion without chat template wrapping. */
+int32_t cortiq_complete(void *handle, const char *prompt, uint32_t max_tokens, cortiq_token_cb cb, void *user);
+
 /* Multi-turn structured JSON message list generation. Returns total tokens or -1 on error. */
 int32_t cortiq_chat_messages(void *handle, const char *json_messages, uint32_t max_tokens, cortiq_token_cb cb, void *user);
+
+/* Text -> image (Lumina-Image 2.0 packed .cmf). Writes height*width*3 interleaved RGB8 bytes into out_rgb. */
+int32_t cortiq_imagine(const char *model_path, const char *prompt, uint32_t width, uint32_t height,
+                       uint32_t steps, float guidance, uint64_t seed, uint8_t *out_rgb,
+                       cortiq_progress_cb progress, void *user);
+
+/* Decode VAE latents [16, h_in, w_in] into planar RGB float [3, 8*h_in, 8*w_in]. */
+int32_t cortiq_vae_decode(const char *model_path, const float *latents, uint32_t h_in, uint32_t w_in, float *out_rgb);
 
 /* Asynchronously cancel generation running on handle (thread-safe). */
 void cortiq_cancel(void *handle);
@@ -81,7 +103,7 @@ void cortiq_cancel(void *handle);
 /* Get thread-local error message from previous failed FFI call. */
 const char *cortiq_last_error(void);
 
-/* Get JSON execution environment status {"simd": "neon", "threads": 4, "gpu_backend": true}. */
+/* Get JSON execution environment status {"simd": "avx2", "threads": 4, "gpu_backend": true}. */
 const char *cortiq_execution_info(void);
 
 /* Free a model handle. NULL is no-op. */
@@ -116,63 +138,36 @@ class CMFModelHandle:
 
 ### 3.2 Threading, GIL & Interruption Flow
 
-When `CMFTextGenerate.generate()` or `CMFChatGenerate.generate()` executes:
-1. The node extracts the active `CMFModelHandle`.
-2. Python registers a `CFUNCTYPE` callback: `(const char *token, void *user) -> bool`.
-3. Inside the callback:
-   - Token string is UTF-8 decoded and appended to the output buffer.
-   - ComfyUI interruption state is checked via `comfy.model_management.throw_exception_if_processing_interrupted()`.
-   - If interrupted, the wrapper calls `cortiq_cancel(handle)` and returns `False` to Rust to halt generation immediately.
-4. Python callback wrapper object is held in local scope for the duration of the FFI call to prevent garbage collection.
+1. During text (`cortiq_chat`, `cortiq_chat_messages`) or image (`cortiq_imagine`) generation, Python registers a `CFUNCTYPE` callback held in local scope for the duration of the FFI call.
+2. Inside the callback, `comfy.model_management.processing_interrupted()` is checked on every token or denoising step.
+3. If interrupted, the callback signals Rust to stop immediately (`cortiq_cancel(handle)` / returning `False`).
+4. Upon return from the C FFI call, the node invokes `comfy.model_management.throw_exception_if_processing_interrupted()` so ComfyUI cleanly halts the workflow queue without raising a false `RuntimeError` modal.
 
 ---
 
 ## 4. ComfyUI Node Specifications
 
 ### 1. `CMFModelLoader`
-- **Inputs:** `model_name` (dropdown of `.cmf` files in `models/cmf/`)
+- **Inputs:** `model_name` (dropdown of `.cmf` files in `models/cmf/`), `enable_gpu` (BOOLEAN), `threads` (INT)
 - **Outputs:** `CMF_MODEL` (`CMFModelHandle`)
 - **Category:** `Cortiq/CMF`
-- **Function:** `load_model`
 
 ### 2. `CMFSamplerOptions`
-- **Inputs:**
-  - `temperature` (FLOAT, default: `0.7`, min: `0.0`, max: `2.0`, step: `0.01`)
-  - `top_p` (FLOAT, default: `0.9`, min: `0.0`, max: `1.0`, step: `0.01`)
-  - `top_k` (INT, default: `40`, min: `0`, max: `200`)
-  - `repetition_penalty` (FLOAT, default: `1.1`, min: `1.0`, max: `2.0`, step: `0.01`)
-  - `greedy` (BOOLEAN, default: `False`)
-  - `seed` (INT, default: `0`, min: `0`, max: `0xffffffffffffffff`)
+- **Inputs:** `temperature`, `top_p`, `top_k`, `repetition_penalty`, `greedy`, `seed`
 - **Outputs:** `CMF_OPTIONS` (dict)
 - **Category:** `Cortiq/CMF`
 
 ### 3. `CMFTextGenerate`
-- **Inputs:**
-  - `model` (`CMF_MODEL`)
-  - `prompt` (STRING, multiline)
-  - `max_tokens` (INT, default: `256`, min: `1`, max: `8192`)
-  - `options` (`CMF_OPTIONS`, optional)
+- **Inputs:** `model` (`CMF_MODEL`), `prompt` (STRING, multiline), `max_tokens` (INT), `options` (`CMF_OPTIONS`, optional; resets to `DEFAULT_SAMPLER_OPTIONS` when disconnected)
 - **Outputs:** `STRING` (generated text)
 - **Category:** `Cortiq/CMF`
 
 ### 4. `CMFChatGenerate`
-- **Inputs:**
-  - `model` (`CMF_MODEL`)
-  - `system_prompt` (STRING, multiline, default: `"You are a helpful assistant."`)
-  - `user_prompt` (STRING, multiline)
-  - `max_tokens` (INT, default: `256`, min: `1`, max: `8192`)
-  - `options` (`CMF_OPTIONS`, optional)
+- **Inputs:** `model` (`CMF_MODEL`), `system_prompt` (STRING), `user_prompt` (STRING), `max_tokens` (INT), `options` (`CMF_OPTIONS`, optional; resets to `DEFAULT_SAMPLER_OPTIONS` when disconnected)
 - **Outputs:** `STRING` (assistant response)
 - **Category:** `Cortiq/CMF`
 
----
-
-## 5. Error Recovery Matrix
-
-| Trigger / Condition | Direct Cause | System Recovery Behavior |
-| :--- | :--- | :--- |
-| `cortiq_ffi` dynamic library missing | Missing `.dll`/`.so`/`.dylib` in `bin/` | `FileNotFoundError` raised with build & installation instructions. |
-| Non-existent or corrupted `.cmf` model | `cortiq_load` returns NULL | `cortiq_last_error()` queried; `RuntimeError` raised with Rust error message. |
-| User clicks "Cancel" in ComfyUI | Processing interrupt signal | `cortiq_cancel(handle)` invoked asynchronously; node terminates cleanly without crashing Python. |
-| Invalid JSON options payload | Malformed JSON in `cortiq_set_options` | Returns -1; `RuntimeError` raised with error payload string. |
-| System out of RAM/VRAM | Allocation failure in Rust core | `cortiq_last_error()` catches OOM error and raises `MemoryError`. |
+### 5. `CMFImageGenerate`
+- **Inputs:** `model_name` (`.cmf` file), `prompt` (STRING), `width` (INT), `height` (INT), `steps` (INT), `guidance` (FLOAT), `seed` (INT), `enable_gpu` (BOOLEAN), `threads` (INT)
+- **Outputs:** `IMAGE` (`torch.Tensor` of shape `[1, H, W, 3]`, `float32` normalized in `[0.0, 1.0]`)
+- **Category:** `Cortiq/CMF`

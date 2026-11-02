@@ -21,10 +21,18 @@ wheels/
 .installed.cfg
 *.egg
 
-# Compiled native binaries
+# Compiled native binaries & backups
+*.dll
+*.so
+*.dylib
+*.old
 bin/*.dll
 bin/*.so
 bin/*.dylib
+bin/*.old
+
+# Generated benchmark images & scratch outputs
+*.png
 
 # Internal handoffs, AI transcripts, and temporary logs
 docs/conversations/

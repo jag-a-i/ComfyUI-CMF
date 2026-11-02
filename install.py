@@ -12,9 +12,16 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).parent.resolve()
 BIN_DIR = ROOT_DIR / "bin"
-CMF_SOURCE_DIR = ROOT_DIR.parent / "cmf_source"
-if not CMF_SOURCE_DIR.exists():
-    CMF_SOURCE_DIR = ROOT_DIR / "cmf_source"
+for _candidate in (
+    ROOT_DIR.parent.parent / "cmf_source",
+    ROOT_DIR.parent / "cmf_source",
+    ROOT_DIR / "cmf_source",
+):
+    if _candidate.exists():
+        CMF_SOURCE_DIR = _candidate
+        break
+else:
+    CMF_SOURCE_DIR = ROOT_DIR.parent.parent / "cmf_source"
 
 
 def get_lib_name() -> str:
