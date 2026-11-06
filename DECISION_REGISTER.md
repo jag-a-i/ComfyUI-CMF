@@ -408,3 +408,28 @@ This document serves as the durable Architecture Decision Record (ADR) and decis
 - **References:**
   - `crates/cortiq-engine/src/gpu_wgpu.rs` (lines 10652–10670 `want_coop`, 10823–10849 pipeline creation, 18755–18912 `COOP_MM_SRC`, 19393–19409 `mm_pipeline`)
   - `crates/cortiq-engine/tests/gpu_coop_parity.rs` (new parity test suite)
+
+---
+
+### DR-029 - 8-Output-Channel Shared-Memory Weight-Cached VAE Convolution & Parallel Thread-Scoped Dequantization Cache
+
+- **Date:** 2026-11-06
+- **Status:** Accepted
+- **Decision:**
+  1. **8-Output-Channel WGSL Convolution Kernel:** Refactor `vae_conv` compute shader in `gpu_wgpu.rs` from 1 output channel per workgroup (`@workgroup_size(64)`) to 8 simultaneous output channels per workgroup (`oc_base = vc_p.oc_start + wid.y * 8u`). Use a `var<workgroup> vc_sw: array<vec4<f32>, 144>` (2.25 KB SRAM) weight cache to stage 8 input channels × 9 spatial taps across 8 output channels, reducing global input activation loads by 8×, weight reads by 64×, and workgroup dispatch count by 8×.
+  2. **Thread-Scoped Parallel VAE Dequantization & Process-Level Weight Cache:** Introduce `VaeDecoder::from_cmf_cached` in `vae.rs` backed by a static `OnceLock<Mutex<Option<(u64, Arc<VaeDecoder>)>>>` keyed by CMF tensor metadata, and parallelize `f16 -> f32` dequantization across `std::thread::scope`. Eliminates 2.31s redundant CPU dequantization overhead on repeated generation runs.
+  3. **Queue Pipelining:** Remove redundant inner `c.device.poll(wait_indefinitely())` stalls in `encode_vae_groupnorm` and `run_vae_axpy`, batching commands within ResNet block boundaries.
+- **Hardware Verification:**
+  - **1024×1024 VAE Decode Time:** Dropped from **15.58s** down to **3.60s** (4.33× speedup; `up0.resnets` 1.09s → 0.20s, `up1.resnets` 2.89s → 0.65s, `up2.resnets` 3.14s → 0.71s, `up3.resnets` 2.06s → 0.71s).
+  - **512×512 VAE Decode Time:** **1.18s** (down from 4.34s).
+  - **Numerical Parity (Bit-for-Bit Float32 Precision):**
+    - `MSE = 1.98018698e-13` (threshold `< 1e-4`)
+    - `MaxErr = 6.35907054e-06`
+    - `PSNR = 120.00 dB` (threshold `> 40 dB`)
+    - `Seam Discontinuity Metric = 0.000000` (zero seam boundary artifacts)
+- **References:**
+  - `crates/cortiq-engine/src/gpu_wgpu.rs` (`vae_conv`, `cache_const_buffer`, `encode_vae_conv_buf`)
+  - `crates/cortiq-engine/src/vae.rs` (`from_cmf_cached`, `decode`)
+  - `crates/cortiq-engine/src/imagegen.rs` (`from_cmf_cached`)
+  - `crates/cortiq-ffi/src/lib.rs` (`from_cmf_cached`)
+
